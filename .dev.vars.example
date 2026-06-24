@@ -1,0 +1,6 @@
+# Copy to .dev.vars for local development (gitignored).
+# For production use: wrangler pages secret put DUITKU_API_KEY (etc.)
+DUITKU_MERCHANT_CODE=Dxxxxx
+DUITKU_API_KEY=your_duitku_api_key_here
+DUITKU_ENV=production
+OBP_BASE_URL=

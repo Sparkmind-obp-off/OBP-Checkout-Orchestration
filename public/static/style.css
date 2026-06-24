@@ -1,0 +1,6 @@
+/* OBP Checkout Orchestrator — supplemental styles */
+:root { color-scheme: dark; }
+body { font-family: -apple-system, "Inter", "Segoe UI", Roboto, sans-serif; }
+code { font-family: "JetBrains Mono", ui-monospace, monospace; }
+input, select { color: #e2e8f0; }
+input:focus, select:focus { outline: 2px solid rgba(245,158,11,.5); }

@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.wrangler/
+
+# Secrets / env — NEVER commit
+.dev.vars
+.env
+*.local
+
+# PM2 / logs
+.pm2/
+logs/
+*.log
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Backups / archives
+*.tar.gz
+*.zip
+*.bak
