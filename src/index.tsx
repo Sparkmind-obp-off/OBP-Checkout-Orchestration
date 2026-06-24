@@ -7,6 +7,11 @@ import {
   verifyCallbackSignature,
   type DuitkuConfig
 } from './duitku'
+import { Home } from './views/home'
+import { FoundryCatalog } from './views/foundry'
+import { CheckoutPage } from './views/checkout'
+import { AdminDashboard } from './views/admin'
+import { OFFERS } from './data/offers'
 
 type Bindings = {
   DB: D1Database
@@ -236,20 +241,39 @@ app.post('/webhooks/duitku', async (c) => {
 
   const valid = await verifyCallbackSignature(cfg, merchantCode, amount, merchantOrderId, signature)
 
+  // --- Replay protection (nonce) ---
+  // Each authentic Duitku callback for a given (order, reference, resultCode, signature)
+  // tuple should be processed once. Duitku may retry the same callback; we must be
+  // idempotent. We use the signature as a nonce key + the result_code to dedupe.
+  const nonce = `${merchantOrderId}:${reference}:${resultCode}:${signature.slice(0, 32)}`
+  let isReplay = false
+  if (valid) {
+    const seen = await c.env.DB.prepare(
+      `SELECT 1 FROM callbacks WHERE nonce = ? LIMIT 1`
+    ).bind(nonce).first()
+    if (seen) isReplay = true
+  }
+
   await c.env.DB.prepare(
-    `INSERT INTO callbacks (merchant_order_id, reference, result_code, amount, signature_valid, raw_body)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).bind(merchantOrderId, reference, resultCode, amount, valid ? 1 : 0, JSON.stringify(raw)).run()
+    `INSERT INTO callbacks (merchant_order_id, reference, result_code, amount, signature_valid, raw_body, nonce, is_replay)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(merchantOrderId, reference, resultCode, amount, valid ? 1 : 0, JSON.stringify(raw), valid ? nonce : null, isReplay ? 1 : 0).run()
 
   if (!valid) {
     return c.text('invalid signature', 401)
+  }
+
+  // Already processed this exact callback -> ack without re-firing fan-out
+  if (isReplay) {
+    return c.text('SUCCESS', 200)
   }
 
   const inv = await c.env.DB.prepare(`SELECT * FROM invoices WHERE merchant_order_id = ?`)
     .bind(merchantOrderId).first<any>()
   if (!inv) return c.text('unknown order', 200) // ack to stop retries
 
-  // resultCode: 00 success, 01 failed, 02 pending/cancelled
+  // Duitku resultCode mapping:
+  //   00 = success/paid · 01 = failed · 02 = pending (awaiting payment)
   let newStatus = inv.status
   let event = ''
   if (resultCode === '00' && inv.status !== 'paid') {
@@ -258,6 +282,10 @@ app.post('/webhooks/duitku', async (c) => {
   } else if (resultCode === '01') {
     newStatus = 'failed'
     event = 'payment.failed'
+  } else if (resultCode === '02' && inv.status === 'pending') {
+    // explicit pending — keep pending, no fan-out
+    newStatus = 'pending'
+    event = ''
   }
 
   if (newStatus !== inv.status) {
@@ -318,68 +346,72 @@ app.get('/payment/return', (c) => {
   )
 })
 
-// Home / checkout orchestrator UI
+// Home — SparkMind X · Outcome Foundry (narasi utama)
 app.get('/', (c) => {
-  return c.render(
-    <main class="max-w-3xl mx-auto px-4 py-10">
-      <header class="text-center mb-10">
-        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-semibold mb-4">
-          <i class="fas fa-shield-halved"></i> Merchant-of-Record · Oasis BI Pro
-        </div>
-        <h1 class="text-3xl md:text-4xl font-bold tracking-tight">OBP Checkout Orchestrator</h1>
-        <p class="text-slate-400 mt-2">Satu merchant code Duitku → fan-out ke semua sub-brand SparkMind.</p>
-      </header>
+  return c.render(<Home />, { title: 'SparkMind X · Outcome Foundry' })
+})
 
-      <section id="checkout-section" class="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8">
-        <h2 class="text-lg font-semibold mb-4"><i class="fas fa-cart-shopping text-amber-400 mr-2"></i>Buat Pembayaran</h2>
-        <form id="checkout-form" class="space-y-4">
-          <div>
-            <label class="block text-sm text-slate-400 mb-1">Sub-brand</label>
-            <select id="sub_brand_id" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2"></select>
-          </div>
-          <div>
-            <label class="block text-sm text-slate-400 mb-1">Produk / Deskripsi</label>
-            <input id="product_details" value="Paket Pro · Bulanan" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
-          </div>
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="block text-sm text-slate-400 mb-1">Nominal (IDR)</label>
-              <input id="amount_idr" type="number" value="49000" min="1000" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
-            </div>
-            <div>
-              <label class="block text-sm text-slate-400 mb-1">Nama Customer</label>
-              <input id="cust_name" value="Budi Santoso" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
-            </div>
-          </div>
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="block text-sm text-slate-400 mb-1">Email</label>
-              <input id="cust_email" type="email" value="budi@example.com" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
-            </div>
-            <div>
-              <label class="block text-sm text-slate-400 mb-1">No. HP</label>
-              <input id="cust_phone" value="08123456789" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2" />
-            </div>
-          </div>
-          <button type="submit" id="pay-btn" class="w-full py-3 rounded-lg bg-amber-500 text-slate-950 font-bold hover:bg-amber-400 transition">
-            <i class="fas fa-bolt mr-2"></i>Bayar Sekarang
-          </button>
-        </form>
-        <div id="result" class="mt-4 text-sm"></div>
-        <p class="mt-6 text-xs text-slate-500 border-t border-slate-800 pt-4">
-          Pembayaran diproses oleh <strong>Oasis BI Pro (oasis-bi-pro.web.id)</strong> sebagai Merchant-of-Record untuk ekosistem SparkMind. Pemrosesan kartu/bank melalui PJP Duitku yang terdaftar di Bank Indonesia.
-        </p>
-      </section>
+// Foundry — katalog outcome/SKU
+app.get('/foundry', (c) => {
+  return c.render(<FoundryCatalog />, { title: 'Katalog Outcome · SparkMind X' })
+})
 
-      <section class="mt-8 grid md:grid-cols-3 gap-4 text-center text-xs">
-        <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4"><i class="fas fa-fingerprint text-amber-400 text-xl mb-2"></i><div class="font-semibold">1 Merchant Code</div><div class="text-slate-500">Satu kredensial Duitku</div></div>
-        <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4"><i class="fas fa-diagram-project text-amber-400 text-xl mb-2"></i><div class="font-semibold">Callback Fan-out</div><div class="text-slate-500">Prefix merchantOrderId</div></div>
-        <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4"><i class="fas fa-cubes text-amber-400 text-xl mb-2"></i><div class="font-semibold">Multi Sub-brand</div><div class="text-slate-500">BarberKas, KuratorKas, dll</div></div>
-      </section>
-      <script src="/static/duitku-pop.js"></script>
-    </main>,
-    { title: 'OBP Checkout Orchestrator' }
-  )
+// Checkout — form MoR (mendukung pre-fill via ?offer= & mode=intake)
+app.get('/checkout', (c) => {
+  const offer = c.req.query('offer') || undefined
+  const mode = c.req.query('mode') || undefined
+  return c.render(<CheckoutPage offerSlug={offer} mode={mode} />, { title: 'Checkout · SparkMind X' })
+})
+
+// Admin — dashboard read-only
+app.get('/admin', (c) => {
+  return c.render(<AdminDashboard />, { title: 'Foundry Admin · SparkMind X' })
+})
+
+// ===========================================================================
+// API: offer catalog (Outcome Foundry SKUs)
+// ===========================================================================
+app.get('/api/offers', (c) => {
+  return c.json({ offers: OFFERS })
+})
+
+// ===========================================================================
+// API: admin stats (read-only observability)
+// ===========================================================================
+app.get('/api/stats', async (c) => {
+  const db = c.env.DB
+
+  const summary = await db.prepare(
+    `SELECT
+       COUNT(*) AS total_invoices,
+       SUM(CASE WHEN status='paid' THEN 1 ELSE 0 END) AS paid_count,
+       SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
+       SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_count,
+       COALESCE(SUM(CASE WHEN status='paid' THEN amount_idr ELSE 0 END), 0) AS paid_amount_idr
+     FROM invoices`
+  ).first<any>()
+
+  const recentInvoices = await db.prepare(
+    `SELECT merchant_order_id, sub_brand_id, amount_idr, status, product_details, created_at
+     FROM invoices ORDER BY id DESC LIMIT 20`
+  ).all()
+
+  const recentCallbacks = await db.prepare(
+    `SELECT merchant_order_id, reference, result_code, signature_valid, is_replay, received_at
+     FROM callbacks ORDER BY id DESC LIMIT 20`
+  ).all()
+
+  const recentFanout = await db.prepare(
+    `SELECT sub_brand_id, event, target_url, http_status, delivered, created_at
+     FROM fanout_log ORDER BY id DESC LIMIT 20`
+  ).all()
+
+  return c.json({
+    summary: summary || {},
+    recent_invoices: recentInvoices.results || [],
+    recent_callbacks: recentCallbacks.results || [],
+    recent_fanout: recentFanout.results || []
+  })
 })
 
 // Favicon (avoid 500/404 noise)

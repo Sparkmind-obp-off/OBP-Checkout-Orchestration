@@ -14,6 +14,7 @@ async function loadDuitkuPop() {
 
 async function loadSubBrands() {
   const sel = document.getElementById('sub_brand_id')
+  const preset = (sel && sel.dataset && sel.dataset.preset) || ''
   try {
     const r = await fetch('/api/sub-brands')
     const d = await r.json()
@@ -24,6 +25,8 @@ async function loadSubBrands() {
       o.textContent = `${b.name} (${b.prefix})`
       sel.appendChild(o)
     })
+    // honor preset sub-brand from ?offer= (checkout page)
+    if (preset) sel.value = preset
   } catch (e) {
     sel.innerHTML = '<option value="">(gagal memuat sub-brand)</option>'
   }
